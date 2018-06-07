@@ -25,29 +25,22 @@
 
 package io.nuls.client.web.view;
 
-import io.nuls.client.web.view.controller.IpAddressThread;
-import io.nuls.client.web.view.controller.WebController;
+import io.nuls.client.rpc.constant.RpcConstant;
 import io.nuls.client.web.view.listener.WindowCloseEvent;
-import io.nuls.kernel.thread.manager.TaskManager;
+import io.nuls.kernel.cfg.NulsConfig;
 import javafx.application.Application;
 import javafx.application.Platform;
-import javafx.beans.value.ObservableValue;
-import javafx.concurrent.Worker;
-import javafx.scene.Scene;
 import javafx.scene.image.Image;
-import javafx.scene.layout.VBox;
-import javafx.scene.paint.Color;
 import javafx.stage.Stage;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import netscape.javascript.JSObject;
 
 import javax.swing.*;
 import java.awt.*;
 import java.awt.TrayIcon.MessageType;
 import java.awt.event.ActionEvent;
 import java.awt.event.ActionListener;
-import java.io.IOException;
+import java.lang.reflect.Method;
 import java.net.URL;
 
 /**
@@ -55,7 +48,7 @@ import java.net.URL;
  *
  * @author ln
  */
-public class WebViewBootstrap extends Application implements ActionListener {
+public class WebViewBootstrap extends Application implements Runnable, ActionListener {
 
     private static final Logger log = LoggerFactory.getLogger(WebViewBootstrap.class);
 
@@ -67,10 +60,15 @@ public class WebViewBootstrap extends Application implements ActionListener {
     private TrayIcon trayIcon;
     private Stage stage;
 
+    @Override
+    public void run() {
+        startWebView(null);
+    }
+
     /**
      * 程序入口
      */
-    public static void startWebView(String[] args) {
+    public void startWebView(String[] args) {
         String os = System.getProperty("os.name").toUpperCase();
         if (!os.startsWith("WINDOWS") && !os.startsWith("MAC OS")) {
             return;
@@ -112,11 +110,7 @@ public class WebViewBootstrap extends Application implements ActionListener {
         //初始化系统托盘
         initSystemTray();
 
-        //初始化容器
-        initContainer();
-
-        //初始化监听器
-        initListener();
+        openBrowse();
 
     }
 
@@ -126,59 +120,6 @@ public class WebViewBootstrap extends Application implements ActionListener {
     @Override
     public void stop() throws Exception {
         System.exit(0);
-    }
-
-    /*
-     * 初始化界面容器
-     */
-    private void initContainer() throws IOException {
-        String url = "http://127.0.0.1:8001";
-
-        VBox root = new VBox();
-        root.setId("root");
-        Browser browser = new Browser(url);
-        WebController controller = new WebController(stage);
-        TaskManager.createAndRunThread((short) 0, "web-view-helper", IpAddressThread.getInstance());
-        browser.getWebEngine().getLoadWorker().stateProperty().addListener(
-                (ObservableValue<? extends Worker.State> ov, Worker.State oldState,
-                 Worker.State newState) -> {
-                    if (newState == Worker.State.SUCCEEDED) {
-                        JSObject win = (JSObject) browser.getWebEngine().executeScript("window");
-                        win.setMember("javaUtil", controller);
-                    }
-                });
-
-        root.getChildren().addAll(browser);
-
-        Scene scene = new Scene(root, 800, 560, Color.web("#666970"));
-        stage.setScene(scene);
-        show();
-    }
-
-    /*
-     * 初始化监听器
-     */
-    private void initListener() {
-        //当点击"X"关闭窗口按钮时，如果系统支持托盘，则最小化到托盘，否则关闭
-        stage.addEventHandler(WindowCloseEvent.ACTION, event -> {
-            if (!(event instanceof WindowCloseEvent)) {
-                return;
-            }
-            if (SystemTray.isSupported()) {
-                //隐藏，可双击托盘恢复
-                hide();
-                if (!hideTip && !isMac()) {
-                    hideTip = true;
-                    TrayIcon[] trayIcons = SystemTray.getSystemTray().getTrayIcons();
-                    if (trayIcons != null && trayIcons.length > 0) {
-                        trayIcons[0].displayMessage("温馨提示", "印链客户端已最小化到系统托盘，双击可再次显示", MessageType.INFO);
-                    }
-                }
-            } else {
-                //退出程序
-                exit();
-            }
-        });
     }
 
     private boolean isMac() {
@@ -193,7 +134,7 @@ public class WebViewBootstrap extends Application implements ActionListener {
         //判断系统是否支持托盘功能
         if (SystemTray.isSupported()) {
             //获得托盘图标图片路径
-            URL resource = this.getClass().getResource("/image/icon.png");
+            URL resource = this.getClass().getResource("/image/tray.png");
             trayIcon = new TrayIcon(new ImageIcon(resource).getImage(), "NULS", createMenu());
             //设置双击动作标识
             trayIcon.setActionCommand("db_click_tray");
@@ -218,11 +159,11 @@ public class WebViewBootstrap extends Application implements ActionListener {
         PopupMenu popupMenu = new PopupMenu(); //创建弹出菜单对象
 
         //创建弹出菜单中的显示主窗体项.
-        MenuItem itemShow = new MenuItem("Show");
+        MenuItem itemShow = new MenuItem("Show Wallet");
         itemShow.addActionListener(new ActionListener() {
             @Override
             public void actionPerformed(ActionEvent e) {
-                show();
+                openBrowse();
             }
         });
 
@@ -259,7 +200,7 @@ public class WebViewBootstrap extends Application implements ActionListener {
             if (stage.isShowing()) {
                 hide();
             } else {
-                show();
+                openBrowse();
             }
         }
     }
@@ -267,15 +208,56 @@ public class WebViewBootstrap extends Application implements ActionListener {
     /**
      * 显示窗口
      */
-    public void show() {
-        Platform.setImplicitExit(false);
-        Platform.runLater(new Runnable() {
-            @Override
-            public void run() {
-                stage.show();
-            }
-        });
+    public void openBrowse() {
+        int port = NulsConfig.MODULES_CONFIG.getCfgValue(RpcConstant.CFG_RPC_SECTION, RpcConstant.CFG_RPC_SERVER_PORT, RpcConstant.DEFAULT_PORT);
+        String url = "http://127.0.0.1:" + port;
+        openURL(url);
     }
+
+    public static void openURL(String url) {
+        try {
+            browse(url);
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+
+    private static void browse(String url) throws Exception {
+        // 获取操作系统的名字
+        String osName = System.getProperty("os.name", "");
+        if (osName.startsWith("Mac OS")) {
+            // 苹果
+            Class fileMgr = Class.forName("com.apple.eio.FileManager");
+            Method openURL = fileMgr.getDeclaredMethod("openURL",
+                    new Class[]{String.class});
+            openURL.invoke(null, new Object[]{url});
+        } else if (osName.startsWith("Windows")) {
+            // windows
+            Runtime.getRuntime().exec(
+                    "rundll32 url.dll,FileProtocolHandler " + url);
+        } else {
+            // Unix or Linux
+            String[] browsers = {"firefox", "opera", "konqueror", "epiphany",
+                    "mozilla", "netscape"};
+            String browser = null;
+            for (int count = 0; count < browsers.length && browser == null; count++) {
+                // 执行代码，在brower有值后跳出，
+                // 这里是如果进程创建成功了，==0是表示正常结束。
+                if (Runtime.getRuntime()
+                        .exec(new String[]{"which", browsers[count]})
+                        .waitFor() == 0) {
+                    browser = browsers[count];
+                }
+            }
+            if (browser == null) {
+                throw new Exception("Could not find web browser");
+            } else {
+                // 这个值在上面已经成功的得到了一个进程。
+                Runtime.getRuntime().exec(new String[]{browser, url});
+            }
+        }
+    }
+
 
     /**
      * 隐藏窗口
